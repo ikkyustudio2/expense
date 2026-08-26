@@ -1,0 +1,13 @@
+{
+  "name": "expense-quest",
+  "version": "1.0.0",
+  "private": true,
+  "description": "แอปบันทึกรายจ่าย — PWA + ตัวห่อ Android",
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0"
+  }
+}
