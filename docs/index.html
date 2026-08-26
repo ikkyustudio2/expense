@@ -276,6 +276,18 @@
   .shot .cam{color:var(--gold)}
   .shot .alb{color:var(--grass)}
 
+  .reading{
+    display:none;align-items:center;gap:10px;margin-bottom:14px;padding:11px 13px;
+    background:var(--panel);border:var(--px) solid #000;
+    box-shadow:inset 0 0 0 3px var(--gold), 0 var(--px) 0 #000;
+    font-size:13px;font-weight:700;color:var(--txt);
+  }
+  .reading.on{display:flex}
+  .reading .dots{display:flex;gap:4px;flex:0 0 auto}
+  .reading .dots i{width:8px;height:8px;background:var(--gold);display:block;animation:hop .6s steps(2,end) infinite}
+  .reading .dots i:nth-child(2){animation-delay:.15s;background:var(--sky)}
+  .reading .dots i:nth-child(3){animation-delay:.3s;background:var(--grass)}
+  @media (prefers-reduced-motion:reduce){.reading .dots i{animation:none}}
   .preview{
     position:relative;margin-bottom:18px;border:var(--px) solid #000;
     box-shadow:inset 0 0 0 var(--px) var(--edge-lt), 0 6px 0 #000;background:var(--panel-lo);
@@ -429,6 +441,11 @@
     <input type="file" id="file" accept="image/*" style="display:none">
 
     <div id="preview"></div>
+
+    <div class="reading" id="reading">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span id="readingTxt">กำลังอ่านใบเสร็จ… กรอกเองไปพลางได้เลย</span>
+    </div>
 
     <div class="card">
       <div class="score">
@@ -652,11 +669,10 @@
   }
   window.__showPair = showPair;
 
-  function call(fn, args) {
-    if (!cfg || !cfg.url || !cfg.token) {
-      showPair();
-      return new Promise(function () { });   // ค้างไว้เฉย ๆ จนกว่าจะเชื่อมต่อแล้วโหลดใหม่
-    }
+  // คำสั่งที่อ่านอย่างเดียว ยิงซ้ำได้ปลอดภัย ส่วนคำสั่งที่เขียนข้อมูลห้ามยิงซ้ำเองเด็ดขาด
+  var SAFE_RETRY = ['api_bootstrap', 'api_listRecent', 'api_summary', 'api_analyzeImage'];
+
+  function once(fn, args) {
     return fetch(cfg.url, {
       method: 'POST',
       // ตั้งใจใช้ text/plain เพื่อเลี่ยง preflight ซึ่ง Apps Script ไม่รองรับ
@@ -669,11 +685,39 @@
       var j;
       try { j = JSON.parse(t); }
       catch (e) {
-        throw new Error('ตอบกลับมาไม่ใช่ JSON — ตรวจว่า URL ลงท้ายด้วย /exec และ deploy แบบ "ทุกคน" แล้ว');
+        var err = new Error('Google ตอบกลับมาไม่ใช่ JSON');
+        err.notJson = true;
+        throw err;
       }
       if (!j.ok) throw new Error(j.error || 'เรียกไม่สำเร็จ');
       return j.result;
     });
+  }
+
+  function call(fn, args) {
+    if (!cfg || !cfg.url || !cfg.token) {
+      showPair();
+      return new Promise(function () { });   // ค้างไว้เฉย ๆ จนกว่าจะเชื่อมต่อแล้วโหลดใหม่
+    }
+    var canRetry = SAFE_RETRY.indexOf(fn) !== -1;
+    var tries = 0;
+
+    function attempt() {
+      tries++;
+      return once(fn, args).catch(function (e) {
+        var glitch = e.notJson || /Failed to fetch|NetworkError|Load failed/i.test(e.message || '');
+        if (glitch && canRetry && tries < 3) {
+          return new Promise(function (res) { setTimeout(res, 1200 * tries); }).then(attempt);
+        }
+        if (e.notJson) {
+          throw new Error(tries > 1
+            ? 'Google ตอบกลับผิดปกติ ลองแล้ว ' + tries + ' ครั้ง — ลองใหม่อีกทีนะ'
+            : 'Google ตอบกลับผิดปกติ ลองกดใหม่อีกครั้ง (ถ้าเป็นทุกครั้ง ตรวจว่า URL ลงท้าย /exec และ deploy แบบ "ทุกคน")');
+        }
+        throw e;
+      });
+    }
+    return attempt();
   }
 
   function runner() {
@@ -698,7 +742,7 @@
 })();
 
 var S = { profiles: [], categories: {}, profile: '', img: null, mime: '', boot: null,
-         refNo: '', forceDup: false, who: '' };
+         refNo: '', forceDup: false, who: '', tempFileId: '', imageHash: '', dirty: {} };
 
 /* ---------- ไอคอนพิกเซล 8x8 (1 = ทึบ) ---------- */
 var ICONS = {
@@ -963,14 +1007,14 @@ $('file').addEventListener('change', function(e){
   });
 });
 
-function clearImg(){ S.img = null; $('preview').innerHTML = ''; }
+function clearImg(){ S.img = null; S.tempFileId = ''; S.imageHash = ''; $('preview').innerHTML = ''; reading(false); }
 
 function compress(file, cb){
   var reader = new FileReader();
   reader.onload = function(ev){
     var img = new Image();
     img.onload = function(){
-      var MAX = 1600, w = img.width, h = img.height;
+      var MAX = 1280, w = img.width, h = img.height;   // ใบเสร็จอ่านออกสบายที่ขนาดนี้ และเล็กลงเกือบครึ่ง
       if (w > MAX || h > MAX){
         if (w > h){ h = Math.round(h*MAX/w); w = MAX; }
         else { w = Math.round(w*MAX/h); h = MAX; }
@@ -980,7 +1024,7 @@ function compress(file, cb){
       var ctx = c.getContext('2d');
       ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
       ctx.drawImage(img, 0, 0, w, h);
-      cb(c.toDataURL('image/jpeg', 0.9));
+      cb(c.toDataURL('image/jpeg', 0.8));
     };
     img.onerror = function(){ toast('เปิดไฟล์รูปไม่ได้', true); };
     img.src = ev.target.result;
@@ -988,18 +1032,43 @@ function compress(file, cb){
   reader.readAsDataURL(file);
 }
 
+/* จำว่าผู้ใช้แตะช่องไหนไปแล้ว AI จะได้ไม่ทับของที่กรอกเอง */
+var FORM_FIELDS = ['amount','date','vendor','note','category','payment'];
+FORM_FIELDS.forEach(function(id){
+  var el = $(id);
+  if (!el) return;
+  ['input','change'].forEach(function(ev){
+    el.addEventListener(ev, function(){ S.dirty[id] = true; });
+  });
+});
+
+function reading(on, txt){
+  $('reading').className = on ? 'reading on' : 'reading';
+  if (txt) $('readingTxt').textContent = txt;
+}
+
+/* เติมค่าให้เฉพาะช่องที่ผู้ใช้ยังไม่ได้แตะ จะได้พิมพ์แข่งกับ AI ได้ */
+function fillIfUntouched(id, val){
+  if (val === '' || val === undefined || val === null) return;
+  if (S.dirty[id]) return;
+  $(id).value = val;
+}
+
 function analyze(){
-  overlay(true, 'READING...', 'กำลังอ่านใบเสร็จด้วย AI');
+  reading(true, 'กำลังอ่านใบเสร็จ… กรอกเองไปพลางได้เลย');
+  S.dirty = {};                     // เริ่มนับใหม่ทุกครั้งที่แนบรูป
   google.script.run
     .withSuccessHandler(function(r){
-      overlay(false);
-      if (r.amount) $('amount').value = r.amount;
-      if (r.date) $('date').value = r.date;
-      if (r.vendor) $('vendor').value = r.vendor;
-      if (r.note) $('note').value = r.note;
-      if (r.category) selectByText($('category'), r.category);
-      if (r.payment) selectByText($('payment'), r.payment);
+      reading(false);
+      fillIfUntouched('amount', r.amount);
+      fillIfUntouched('date', r.date);
+      fillIfUntouched('vendor', r.vendor);
+      fillIfUntouched('note', r.note);
+      if (r.category && !S.dirty.category) selectByText($('category'), r.category);
+      if (r.payment && !S.dirty.payment) selectByText($('payment'), r.payment);
       S.refNo = r.refNo || '';
+      S.tempFileId = r.tempFileId || '';
+      S.imageHash = r.imageHash || '';
       S.forceDup = false;
 
       if (r.duplicate){
@@ -1018,7 +1087,7 @@ function analyze(){
       toast('อ่านได้แล้ว' + (conf ? ' (มั่นใจ '+conf+'%)' : '') + ' — ตรวจยอดก่อนบันทึกนะ');
     })
     .withFailureHandler(function(e){
-      overlay(false);
+      reading(false);
       toast(e.message || 'อ่านรูปไม่สำเร็จ กรอกเองได้เลย', true);
     })
     .api_analyzeImage({ dataUrl: S.img, mimeType: S.mime, profile: S.profile });
@@ -1066,9 +1135,12 @@ function save(){
       vendor: $('vendor').value,
       payment: $('payment').value,
       note: $('note').value,
-      source: S.img ? 'ถ่ายรูป' : 'คีย์เอง',
-      dataUrl: S.img,
+      source: (S.img || S.tempFileId) ? 'ถ่ายรูป' : 'คีย์เอง',
+      // ถ้า AI อ่านรูปไปแล้ว รูปถูกพักไว้บน Drive แล้ว ส่งแค่ id พอ ไม่ต้องส่งรูปซ้ำ
+      dataUrl: S.tempFileId ? null : S.img,
       mimeType: S.mime,
+      tempFileId: S.tempFileId,
+      imageHash: S.imageHash,
       refNo: S.refNo,
       force: S.forceDup,
       who: S.who
@@ -1076,7 +1148,7 @@ function save(){
 }
 
 function resetForm(){
-  S.refNo = ''; S.forceDup = false;
+  S.refNo = ''; S.forceDup = false; S.tempFileId = ''; S.imageHash = ''; S.dirty = {};
   $('amount').value = ''; $('vendor').value = ''; $('note').value = '';
   $('payment').selectedIndex = 0;
   $('date').value = S.boot.today;
