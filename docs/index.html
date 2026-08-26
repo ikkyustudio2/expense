@@ -288,6 +288,37 @@
   .reading .dots i:nth-child(2){animation-delay:.15s;background:var(--sky)}
   .reading .dots i:nth-child(3){animation-delay:.3s;background:var(--grass)}
   @media (prefers-reduced-motion:reduce){.reading .dots i{animation:none}}
+  /* ---------- คิวอ่านหลายใบ ---------- */
+  .qhead{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;
+  }
+  .qhead .n{font-family:'Press Start 2P',monospace;font-size:10px;color:var(--gold);text-shadow:2px 2px 0 var(--tshadow)}
+  .qbar{height:12px;background:var(--track-bg);border:3px solid #000;box-shadow:inset 0 0 0 2px var(--track-ring);margin-bottom:14px}
+  .qbar i{display:block;height:100%;background-color:var(--grass);
+    background-image:repeating-linear-gradient(90deg,rgba(0,0,0,.45) 0 2px,transparent 2px 9px);width:0}
+  .qrow{display:flex;gap:10px;padding:10px 0;border-bottom:3px dashed var(--dash);align-items:flex-start}
+  .qrow:last-child{border-bottom:none}
+  .qrow.off{opacity:.45}
+  .qrow img{width:44px;height:44px;flex:0 0 44px;object-fit:cover;border:3px solid #000;background:var(--panel-lo)}
+  .qrow .mid{flex:1;min-width:0}
+  .qrow .st{font-size:11.5px;font-weight:700;margin-bottom:4px}
+  .qrow .st.wait{color:var(--dim)}
+  .qrow .st.reading{color:var(--sky)}
+  .qrow .st.done{color:var(--grass)}
+  .qrow .st.dup{color:var(--gold)}
+  .qrow .st.err{color:var(--blood)}
+  .qrow .st.saved{color:var(--grass)}
+  .qrow .line{display:flex;gap:6px;margin-bottom:5px}
+  .qrow input,.qrow select{padding:7px 8px;font-size:14px;border-width:3px}
+  .qrow .amt{flex:0 0 96px;text-align:right;font-family:'Press Start 2P',monospace;font-size:11px;color:var(--score-ink)}
+  .qrow .ven{flex:1;min-width:0}
+  .qrow .tick{
+    flex:0 0 30px;width:30px;height:30px;margin-top:6px;background:var(--panel-lo);
+    border:3px solid #000;color:var(--grass);font-size:15px;font-weight:700;line-height:1;
+  }
+  .qrow .tick.on{background:var(--grass);color:var(--on-accent)}
+  .qnote{font-size:12px;color:var(--gold);font-weight:700;margin-top:3px}
+  .qerr{font-size:12px;color:var(--blood);font-weight:700;margin-top:3px}
   .preview{
     position:relative;margin-bottom:18px;border:var(--px) solid #000;
     box-shadow:inset 0 0 0 var(--px) var(--edge-lt), 0 6px 0 #000;background:var(--panel-lo);
@@ -438,16 +469,17 @@
       <button onclick="pick(true)"><span class="cam" data-ic="cam"></span>ถ่ายรูปใบเสร็จ</button>
       <button onclick="pick(false)"><span class="alb" data-ic="alb"></span>เลือกจากคลัง</button>
     </div>
-    <input type="file" id="file" accept="image/*" style="display:none">
+    <input type="file" id="file" accept="image/*" multiple style="display:none">
 
     <div id="preview"></div>
+    <div id="batchBox"></div>
 
     <div class="reading" id="reading">
       <span class="dots"><i></i><i></i><i></i></span>
       <span id="readingTxt">กำลังอ่านใบเสร็จ… กรอกเองไปพลางได้เลย</span>
     </div>
 
-    <div class="card">
+    <div class="card" id="singleCard">
       <div class="score">
         <label>AMOUNT / จำนวนเงิน</label>
         <input type="number" id="amount" inputmode="decimal" placeholder="0.00" step="0.01">
@@ -742,7 +774,7 @@
 })();
 
 var S = { profiles: [], categories: {}, profile: '', img: null, mime: '', boot: null,
-         refNo: '', forceDup: false, who: '', tempFileId: '', imageHash: '', dirty: {} };
+         refNo: '', forceDup: false, who: '', tempFileId: '', imageHash: '', dirty: {}, batch: [] };
 
 /* ---------- ไอคอนพิกเซล 8x8 (1 = ทึบ) ---------- */
 var ICONS = {
@@ -995,8 +1027,10 @@ function pick(useCamera){
 }
 
 $('file').addEventListener('change', function(e){
-  var file = e.target.files[0];
-  if (!file) return;
+  var files = Array.prototype.slice.call(e.target.files || []);
+  if (!files.length) return;
+  if (files.length > 1){ startBatch(files); return; }
+  var file = files[0];
   compress(file, function(dataUrl){
     S.img = dataUrl;
     S.mime = 'image/jpeg';
@@ -1097,6 +1131,181 @@ function selectByText(sel, text){
   for (var i = 0; i < sel.options.length; i++){
     if (sel.options[i].text === text){ sel.selectedIndex = i; return; }
   }
+}
+
+/* ==================== อ่านทีละหลายใบ ====================
+   ยิงทีละใบ เว้นจังหวะเอง ถ้าโดนโควตาจะถอยแล้วค่อย ๆ เร่งกลับ
+   ============================================================ */
+var MAX_BATCH = 20;
+var pace = { gap: 6000, min: 4500, max: 45000 };
+
+function startBatch(files){
+  if (files.length > MAX_BATCH){
+    toast('เลือกมาเกิน ' + MAX_BATCH + ' ใบ จะอ่านให้ ' + MAX_BATCH + ' ใบแรกก่อน', true);
+    files = files.slice(0, MAX_BATCH);
+  }
+  clearImg();
+  S.batch = [];
+  pace.gap = 6000;
+  $('singleCard').style.display = 'none';
+
+  var pending = files.length;
+  files.forEach(function(f, i){
+    compress(f, function(dataUrl){
+      S.batch[i] = { dataUrl: dataUrl, mime: 'image/jpeg', name: f.name,
+                     status: 'wait', tries: 0, checked: true, data: null, dup: null, err: '' };
+      if (--pending === 0){
+        S.batch = S.batch.filter(Boolean);
+        renderBatch();
+        runQueue();
+      }
+    });
+  });
+}
+
+function nextWaiting(){
+  for (var i = 0; i < S.batch.length; i++) if (S.batch[i].status === 'wait') return S.batch[i];
+  return null;
+}
+
+function runQueue(){
+  var it = nextWaiting();
+  if (!it){ renderBatch(); return; }
+  it.status = 'reading';
+  renderBatch();
+
+  google.script.run
+    .withSuccessHandler(function(r){
+      it.data = r;
+      it.dup = r.duplicate || null;
+      it.status = r.duplicate ? 'dup' : 'done';
+      if (r.duplicate) it.checked = false;       // ซ้ำ -> ไม่ติ๊กไว้ให้ ต้องกดเอง
+      pace.gap = Math.max(pace.min, pace.gap - 400);
+      renderBatch();
+      setTimeout(runQueue, pace.gap);
+    })
+    .withFailureHandler(function(e){
+      var msg = (e && e.message) || 'อ่านไม่สำเร็จ';
+      if (/429|โควตา/.test(msg) && it.tries < 3){
+        it.tries++;
+        it.status = 'wait';
+        pace.gap = Math.min(pace.max, Math.round(pace.gap * 1.8));
+        renderBatch();
+        setTimeout(runQueue, pace.gap);
+      } else {
+        it.status = 'err';
+        it.err = msg;
+        renderBatch();
+        setTimeout(runQueue, pace.gap);
+      }
+    })
+    .api_analyzeImage({ dataUrl: it.dataUrl, mimeType: it.mime, profile: S.profile });
+}
+
+var Q_LABEL = { wait:'รอคิว', reading:'กำลังอ่าน…', done:'อ่านแล้ว', dup:'อาจซ้ำ', err:'อ่านไม่ได้', saving:'กำลังบันทึก…', saved:'บันทึกแล้ว' };
+
+function renderBatch(){
+  if (!S.batch.length){ $('batchBox').innerHTML = ''; return; }
+  var cats = S.categories[S.profile] || [{name:'อื่นๆ'}];
+  var left = 0, ready = 0;
+  S.batch.forEach(function(b){
+    if (b.status === 'wait' || b.status === 'reading') left++;
+    if (b.checked && b.status !== 'err' && b.status !== 'saved') ready++;
+  });
+  var pct = Math.round((S.batch.length - left) / S.batch.length * 100);
+
+  var rows = S.batch.map(function(b, i){
+    var d = b.data || {};
+    var opts = cats.map(function(c){
+      return '<option'+(d.category === c.name ? ' selected' : '')+'>'+esc(c.name)+'</option>';
+    }).join('');
+    var editable = (b.status === 'done' || b.status === 'dup');
+    return '<div class="qrow'+(b.checked ? '' : ' off')+'">'+
+      '<img src="'+b.dataUrl+'" alt="">'+
+      '<div class="mid">'+
+        '<div class="st '+b.status+'">'+Q_LABEL[b.status]+'</div>'+
+        (editable ?
+          '<div class="line">'+
+            '<input class="amt" type="number" step="0.01" value="'+(d.amount||'')+'" '+
+              'onchange="qEdit('+i+',\'amount\',this.value)" placeholder="0.00">'+
+            '<input class="ven" type="text" value="'+esc(d.vendor||'')+'" '+
+              'onchange="qEdit('+i+',\'vendor\',this.value)" placeholder="ร้าน">'+
+          '</div>'+
+          '<div class="sel"><select onchange="qEdit('+i+',\'category\',this.value)">'+opts+'</select></div>'
+          : '<div class="s">'+esc(b.name || '')+'</div>') +
+        (b.dup ? '<div class="qnote">ซ้ำกับ '+esc(b.dup.date)+' · '+esc(b.dup.vendor)+' · '+money(b.dup.amount)+'</div>' : '')+
+        (b.err ? '<div class="qerr">'+esc(b.err.slice(0,110))+'</div>' : '')+
+      '</div>'+
+      (b.status === 'saved' || b.status === 'err' ? '' :
+        '<button class="tick'+(b.checked?' on':'')+'" onclick="qToggle('+i+')">'+(b.checked?'✓':'')+'</button>')+
+    '</div>';
+  }).join('');
+
+  $('batchBox').innerHTML =
+    '<div class="card">'+
+      '<div class="qhead"><h3 style="margin:0">BATCH <span class="th">— อ่าน '+S.batch.length+' ใบ</span></h3>'+
+        '<span class="n">'+(S.batch.length - left)+'/'+S.batch.length+'</span></div>'+
+      '<div class="qbar"><i style="width:'+pct+'%"></i></div>'+
+      rows+
+      '<hr>'+
+      '<button class="btn go" id="qSave" onclick="saveBatch()"'+(ready?'':' disabled')+'>'+
+        'บันทึกที่ติ๊กไว้ ('+ready+' ใบ)</button>'+
+      '<div style="height:10px"></div>'+
+      '<button class="btn ghost" onclick="cancelBatch()">ยกเลิกทั้งหมด</button>'+
+    '</div>';
+}
+
+function qToggle(i){ S.batch[i].checked = !S.batch[i].checked; renderBatch(); }
+function qEdit(i, key, val){ if (S.batch[i].data) S.batch[i].data[key] = val; }
+
+function cancelBatch(){
+  S.batch = [];
+  $('batchBox').innerHTML = '';
+  $('singleCard').style.display = '';
+  toast('ยกเลิกแล้ว');
+}
+
+function saveBatch(){
+  var queue = [];
+  S.batch.forEach(function(b){
+    if (b.checked && b.data && Number(b.data.amount) > 0 && b.status !== 'saved') queue.push(b);
+  });
+  if (!queue.length){ toast('ยังไม่มีใบไหนพร้อมบันทึก', true); return; }
+  if (!S.who){ askWho(function(){ saveBatch(); }); return; }
+
+  var okN = 0, failN = 0, k = 0;
+  $('qSave').disabled = true;
+
+  function step(){
+    if (k >= queue.length){
+      toast('บันทึกแล้ว ' + okN + ' ใบ' + (failN ? ' · ไม่สำเร็จ ' + failN + ' ใบ' : ''));
+      loadList();
+      renderBatch();
+      if (!failN) setTimeout(cancelBatch, 1200);
+      return;
+    }
+    var b = queue[k++];
+    var d = b.data;
+    b.status = 'saving'; renderBatch();
+
+    google.script.run
+      .withSuccessHandler(function(){
+        b.status = 'saved'; b.dataUrl = b.dataUrl; okN++;
+        renderBatch(); setTimeout(step, 350);
+      })
+      .withFailureHandler(function(e){
+        b.status = 'err'; b.err = (e && e.message) || 'บันทึกไม่สำเร็จ'; failN++;
+        renderBatch(); setTimeout(step, 350);
+      })
+      .api_saveTransaction({
+        profile: S.profile, date: d.date, amount: d.amount,
+        category: d.category, vendor: d.vendor, payment: d.payment, note: d.note,
+        source: 'ถ่ายรูป', dataUrl: null, mimeType: b.mime,
+        tempFileId: d.tempFileId, imageHash: d.imageHash, refNo: d.refNo,
+        force: true, who: S.who
+      });
+  }
+  step();
 }
 
 /* ---------- บันทึก ---------- */
