@@ -332,6 +332,17 @@
     border:3px solid #000;color:var(--grass);font-size:15px;font-weight:700;line-height:1;
   }
   .qrow .tick.on{background:var(--grass);color:var(--on-accent)}
+  .qsel2{display:flex;gap:6px;margin-bottom:5px}
+  .qsel2 .sel{position:relative}
+  .qsel2 .sel.pf{flex:0 0 40%}
+  .qsel2 .sel.ct{flex:1;min-width:0}
+  .qbulk{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px;font-size:12.5px;color:var(--dim);font-weight:700}
+  .qbulk button{
+    padding:6px 11px;background:var(--panel-lo);border:3px solid #000;color:var(--txt);
+    font-family:inherit;font-size:12.5px;font-weight:700;
+    box-shadow:inset 2px 2px 0 var(--hl), 0 3px 0 #000;
+  }
+  .qbulk button:active{transform:translateY(3px);box-shadow:inset 2px 2px 0 var(--hl), 0 0 0 #000}
   .qnote{font-size:12px;color:var(--gold);font-weight:700;margin-top:3px}
   .qerr{font-size:12px;color:var(--blood);font-weight:700;margin-top:3px}
   .preview{
@@ -1178,6 +1189,7 @@ function startBatch(files){
   files.forEach(function(f, i){
     compress(f, function(dataUrl){
       S.batch[i] = { dataUrl: dataUrl, mime: 'image/jpeg', name: f.name,
+                     profile: S.profile,
                      status: 'wait', tries: 0, checked: true, data: null, dup: null, err: '' };
       if (--pending === 0){
         S.batch = S.batch.filter(Boolean);
@@ -1224,14 +1236,13 @@ function runQueue(){
         setTimeout(runQueue, pace.gap);
       }
     })
-    .api_analyzeImage({ dataUrl: it.dataUrl, mimeType: it.mime, profile: S.profile });
+    .api_analyzeImage({ dataUrl: it.dataUrl, mimeType: it.mime, profile: it.profile || S.profile });
 }
 
 var Q_LABEL = { wait:'รอคิว', reading:'กำลังอ่าน…', done:'อ่านแล้ว', dup:'อาจซ้ำ', err:'อ่านไม่ได้', saving:'กำลังบันทึก…', saved:'บันทึกแล้ว' };
 
 function renderBatch(){
   if (!S.batch.length){ $('batchBox').innerHTML = ''; return; }
-  var cats = S.categories[S.profile] || [{name:'อื่นๆ'}];
   var left = 0, ready = 0;
   S.batch.forEach(function(b){
     if (b.status === 'wait' || b.status === 'reading') left++;
@@ -1241,8 +1252,12 @@ function renderBatch(){
 
   var rows = S.batch.map(function(b, i){
     var d = b.data || {};
-    var opts = cats.map(function(c){
+    var rowProfile = b.profile || S.profile;
+    var opts = (S.categories[rowProfile] || [{name:'อื่นๆ'}]).map(function(c){
       return '<option'+(d.category === c.name ? ' selected' : '')+'>'+esc(c.name)+'</option>';
+    }).join('');
+    var pOpts = S.profiles.map(function(pf){
+      return '<option'+(pf.name === rowProfile ? ' selected' : '')+'>'+esc(pf.name)+'</option>';
     }).join('');
     var editable = (b.status === 'done' || b.status === 'dup');
     return '<div class="qrow'+(b.checked ? '' : ' off')+'">'+
@@ -1257,7 +1272,10 @@ function renderBatch(){
             '<input class="ven" type="text" value="'+esc(d.vendor||'')+'" '+
               'onchange="qEdit('+i+',\'vendor\',this.value)" placeholder="ร้าน">'+
           '</div>'+
-          '<div class="sel" style="margin-bottom:5px"><select onchange="qEdit('+i+',\'category\',this.value)">'+opts+'</select></div>'+
+          '<div class="qsel2">'+
+            '<div class="sel pf"><select onchange="qSetProfile('+i+',this.value)">'+pOpts+'</select></div>'+
+            '<div class="sel ct"><select onchange="qEdit('+i+',\'category\',this.value)">'+opts+'</select></div>'+
+          '</div>'+
           '<input class="ven" style="width:100%" type="text" value="'+esc(d.note||'')+'" '+
             'onchange="qEdit('+i+',\'note\',this.value)" placeholder="หมายเหตุ">'
           : '<div class="s">'+esc(b.name || '')+'</div>') +
@@ -1274,6 +1292,12 @@ function renderBatch(){
       '<div class="qhead"><h3 style="margin:0">BATCH <span class="th">— อ่าน '+S.batch.length+' ใบ</span></h3>'+
         '<span class="n">'+(S.batch.length - left)+'/'+S.batch.length+'</span></div>'+
       '<div class="qbar"><i style="width:'+pct+'%"></i></div>'+
+      '<div class="qbulk"><span>ตั้งทุกใบเป็น</span>'+
+        S.profiles.map(function(pf){
+          return '<button onclick="qSetAllProfiles(\''+String(pf.name).replace(/'/g,"\\'")+'\')">'+
+                 esc(pf.icon)+' '+esc(pf.name)+'</button>';
+        }).join('')+
+      '</div>'+
       rows+
       '<hr>'+
       '<button class="btn go" id="qSave" onclick="saveBatch()"'+(ready?'':' disabled')+'>'+
@@ -1281,6 +1305,50 @@ function renderBatch(){
       '<div style="height:10px"></div>'+
       '<button class="btn ghost" onclick="cancelBatch()">ยกเลิกทั้งหมด</button>'+
     '</div>';
+}
+
+/* เดาหมวดหมู่ในโปรไฟล์ใหม่จากชื่อร้านและหมายเหตุ (ทำงานแบบเดียวกับฝั่งเซิร์ฟเวอร์) */
+function guessCategory(profile, d){
+  var cats = S.categories[profile] || [];
+  if (!cats.length) return 'อื่นๆ';
+  var hay = ((d.vendor||'') + ' ' + (d.note||'') + ' ' + (d.category||'')).toLowerCase();
+  var best = null, bestScore = 0;
+  cats.forEach(function(c){
+    var score = 0;
+    String(c.keywords||'').split(',').forEach(function(k){
+      k = k.trim().toLowerCase();
+      if (k && hay.indexOf(k) !== -1) score += k.length;
+    });
+    if (c.name && hay.indexOf(c.name.toLowerCase()) !== -1) score += 50;
+    if (score > bestScore){ bestScore = score; best = c.name; }
+  });
+  return best || cats[cats.length - 1].name;
+}
+
+function qSetProfile(i, name){
+  var b = S.batch[i];
+  if (!b) return;
+  b.profile = name;
+  if (b.data){
+    var names = (S.categories[name] || []).map(function(c){ return c.name; });
+    if (names.indexOf(b.data.category) === -1) b.data.category = guessCategory(name, b.data);
+  }
+  renderBatch();
+}
+
+function qSetAllProfiles(name){
+  S.batch.forEach(function(b, i){ qSetProfileQuiet(i, name); });
+  renderBatch();
+  toast('ตั้งทุกใบเป็น "' + name + '" แล้ว');
+}
+function qSetProfileQuiet(i, name){
+  var b = S.batch[i];
+  if (!b) return;
+  b.profile = name;
+  if (b.data){
+    var names = (S.categories[name] || []).map(function(c){ return c.name; });
+    if (names.indexOf(b.data.category) === -1) b.data.category = guessCategory(name, b.data);
+  }
 }
 
 function qToggle(i){ S.batch[i].checked = !S.batch[i].checked; renderBatch(); }
@@ -1317,8 +1385,12 @@ function saveBatch(){
     b.status = 'saving'; renderBatch();
 
     google.script.run
-      .withSuccessHandler(function(){
-        b.status = 'saved'; b.dataUrl = b.dataUrl; okN++;
+      .withSuccessHandler(function(r){
+        if (r && r.ok === false && r.duplicate){     // เพิ่งมาซ้ำเพราะเปลี่ยนโปรไฟล์
+          b.status = 'dup'; b.dup = r.duplicate; b.checked = false; failN++;
+          renderBatch(); setTimeout(step, 350); return;
+        }
+        b.status = 'saved'; okN++;
         renderBatch(); setTimeout(step, 350);
       })
       .withFailureHandler(function(e){
@@ -1326,11 +1398,11 @@ function saveBatch(){
         renderBatch(); setTimeout(step, 350);
       })
       .api_saveTransaction({
-        profile: S.profile, date: d.date, amount: d.amount,
+        profile: b.profile || S.profile, date: d.date, amount: d.amount,
         category: d.category, vendor: d.vendor, payment: d.payment, note: d.note,
         source: 'ถ่ายรูป', dataUrl: null, mimeType: b.mime,
         tempFileId: d.tempFileId, imageHash: d.imageHash, refNo: d.refNo,
-        force: true, who: S.who
+        force: !!b.dup, who: S.who      // ใบที่เตือนซ้ำแล้วผู้ใช้ยังติ๊กไว้ ถือว่ายืนยันแล้ว
       });
   }
   step();
