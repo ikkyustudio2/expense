@@ -299,7 +299,22 @@
   .qrow{display:flex;gap:10px;padding:10px 0;border-bottom:3px dashed var(--dash);align-items:flex-start}
   .qrow:last-child{border-bottom:none}
   .qrow.off{opacity:.45}
-  .qrow img{width:44px;height:44px;flex:0 0 44px;object-fit:cover;border:3px solid #000;background:var(--panel-lo)}
+  .qthumb{flex:0 0 52px;display:flex;flex-direction:column;align-items:center;gap:3px;
+    background:none;border:none;padding:0;cursor:zoom-in}
+  .qthumb img{width:52px;height:52px;object-fit:cover;border:3px solid #000;background:var(--panel-lo);display:block}
+  .qthumb span{font-size:10.5px;color:var(--sky);font-weight:700}
+  .zoom{
+    position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:220;
+    display:none;align-items:center;justify-content:center;padding:14px;cursor:zoom-out;
+  }
+  .zoom.on{display:flex}
+  .zoom img{max-width:100%;max-height:88vh;object-fit:contain;border:var(--px) solid #000;
+    box-shadow:inset 0 0 0 3px var(--gold)}
+  .zoom .hint{
+    position:absolute;bottom:16px;left:0;right:0;text-align:center;
+    font-family:'Press Start 2P',monospace;font-size:9px;color:var(--gold);text-shadow:2px 2px 0 #000;
+  }
+  .preview img{cursor:zoom-in}
   .qrow .mid{flex:1;min-width:0}
   .qrow .st{font-size:11.5px;font-weight:700;margin-bottom:4px}
   .qrow .st.wait{color:var(--dim)}
@@ -609,6 +624,7 @@
 </nav>
 
 <div id="toast"></div>
+<div class="zoom" id="zoom" onclick="closeZoom()"><img id="zoomImg" alt="รูปใบเสร็จ"><div class="hint">แตะเพื่อปิด</div></div>
 <div class="overlay" id="pairdlg">
   <div class="dlgbox">
     <div class="dlgtitle">CONNECT</div>
@@ -1035,7 +1051,8 @@ $('file').addEventListener('change', function(e){
     S.img = dataUrl;
     S.mime = 'image/jpeg';
     $('preview').innerHTML =
-      '<div class="preview"><img src="'+dataUrl+'" alt="ใบเสร็จ"><button class="x" onclick="clearImg()">X</button></div>';
+      '<div class="preview"><img src="'+dataUrl+'" alt="ใบเสร็จ" onclick="openZoom(S.img)">'+
+      '<button class="x" onclick="clearImg()">X</button></div>';
     if (S.boot && S.boot.hasApiKey) analyze();
     else toast('แนบรูปแล้ว — ยังไม่ได้ตั้งค่า API key จึงต้องกรอกเอง');
   });
@@ -1075,6 +1092,14 @@ FORM_FIELDS.forEach(function(id){
     el.addEventListener(ev, function(){ S.dirty[id] = true; });
   });
 });
+
+function openZoom(src){
+  if (!src) return;
+  $('zoomImg').src = src;
+  $('zoom').className = 'zoom on';
+}
+function closeZoom(){ $('zoom').className = 'zoom'; $('zoomImg').src = ''; }
+function qZoom(i){ if (S.batch[i]) openZoom(S.batch[i].dataUrl); }
 
 function reading(on, txt){
   $('reading').className = on ? 'reading on' : 'reading';
@@ -1221,7 +1246,8 @@ function renderBatch(){
     }).join('');
     var editable = (b.status === 'done' || b.status === 'dup');
     return '<div class="qrow'+(b.checked ? '' : ' off')+'">'+
-      '<img src="'+b.dataUrl+'" alt="">'+
+      '<button class="qthumb" onclick="qZoom('+i+')" title="แตะดูรูปเต็ม">'+
+        '<img src="'+b.dataUrl+'" alt=""><span>ดูรูป</span></button>'+
       '<div class="mid">'+
         '<div class="st '+b.status+'">'+Q_LABEL[b.status]+'</div>'+
         (editable ?
@@ -1231,7 +1257,9 @@ function renderBatch(){
             '<input class="ven" type="text" value="'+esc(d.vendor||'')+'" '+
               'onchange="qEdit('+i+',\'vendor\',this.value)" placeholder="ร้าน">'+
           '</div>'+
-          '<div class="sel"><select onchange="qEdit('+i+',\'category\',this.value)">'+opts+'</select></div>'
+          '<div class="sel" style="margin-bottom:5px"><select onchange="qEdit('+i+',\'category\',this.value)">'+opts+'</select></div>'+
+          '<input class="ven" style="width:100%" type="text" value="'+esc(d.note||'')+'" '+
+            'onchange="qEdit('+i+',\'note\',this.value)" placeholder="หมายเหตุ">'
           : '<div class="s">'+esc(b.name || '')+'</div>') +
         (b.dup ? '<div class="qnote">ซ้ำกับ '+esc(b.dup.date)+' · '+esc(b.dup.vendor)+' · '+money(b.dup.amount)+'</div>' : '')+
         (b.err ? '<div class="qerr">'+esc(b.err.slice(0,110))+'</div>' : '')+
