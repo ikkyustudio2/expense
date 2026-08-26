@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0a0a14">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="บันทึกรายจ่าย">
@@ -517,6 +518,10 @@
     <div class="card" id="connCard" style="display:none">
       <h3>CONNECTION <span class="th">— การเชื่อมต่อ</span></h3>
       <p class="muted" id="connState" style="margin:-6px 0 12px"></p>
+      <button class="btn" onclick="copyPairLink()">คัดลอกลิงก์เชื่อมต่อ</button>
+      <p class="muted" style="margin:10px 0 0">ส่งลิงก์นี้หาตัวเองแล้วเปิดบนเครื่องอื่น จะเชื่อมให้เองไม่ต้องกรอกรหัส</p>
+      <textarea id="pairLink" readonly rows="3" style="display:none;margin-top:12px;font-size:12px"></textarea>
+      <hr>
       <button class="btn ghost" onclick="openPair()">เชื่อมต่อใหม่</button>
     </div>
 
@@ -790,6 +795,27 @@ function savePair(){
   window.__setCfg({ url: u, token: t });
   toast('เชื่อมต่อแล้ว กำลังโหลดใหม่…');
   setTimeout(function(){ location.reload(); }, 600);
+}
+
+function copyPairLink(){
+  var c = window.__cfg && window.__cfg();
+  if (!c || !c.url || !c.token){ toast('ยังไม่ได้เชื่อมต่อ', true); return; }
+  var s64 = btoa(c.url + '|' + c.token).replace(/\+/g,'-').replace(/\//g,'_');
+  var link = location.origin + location.pathname + '#s=' + s64;
+  var box = $('pairLink');
+  box.value = link;
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(link).then(
+      function(){ toast('คัดลอกลิงก์แล้ว ส่งหาตัวเองได้เลย'); },
+      function(){ revealLink(box); }
+    );
+  } else revealLink(box);
+}
+
+function revealLink(box){
+  box.style.display = '';
+  box.focus(); box.select();
+  toast('คัดลอกอัตโนมัติไม่ได้ — ก๊อปข้อความในช่องด้านล่างเอานะ', true);
 }
 
 function showConnState(){
