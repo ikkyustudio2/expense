@@ -702,13 +702,14 @@
       if (parts.length !== 2 || !parts[0] || !parts[1]) return false;
       cfg = { url: parts[0], token: parts[1] };
       localStorage.setItem(LS, JSON.stringify(cfg));
-      history.replaceState(null, '', location.pathname + location.search);
+      // ตั้งใจไม่ลบ #s= ออกจาก URL — iOS จะได้จำติดไปตอน Add to Home Screen
+      // (แอปที่ติดตั้งบน iOS ใช้ที่เก็บข้อมูลคนละก้อนกับ Safari)
       if (reloadAfter) location.reload();
       return true;
     } catch (e) { return false; }
   }
-  readPairLink(false);
-  // เผื่อผู้ใช้กดลิงก์เชื่อมต่อขณะที่แอปเปิดอยู่แล้ว
+  if (!cfg) readPairLink(false);          // เชื่อมจากลิงก์เฉพาะเครื่องที่ยังไม่เคยเชื่อม
+  // ถ้ากดลิงก์เชื่อมต่อใหม่ขณะแอปเปิดอยู่ ให้เปลี่ยนตามทันที
   window.addEventListener('hashchange', function () { readPairLink(true); });
 
   window.__cfg = function () { return cfg; };
