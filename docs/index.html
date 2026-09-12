@@ -802,7 +802,8 @@
 })();
 
 var S = { profiles: [], categories: {}, profile: '', img: null, mime: '', boot: null,
-         refNo: '', forceDup: false, who: '', tempFileId: '', imageHash: '', dirty: {}, batch: [] };
+         refNo: '', forceDup: false, who: '', tempFileId: '', imageHash: '',
+         stashing: null, msShrink: 0, dirty: {}, batch: [] };
 
 /* ---------- ไอคอนพิกเซล 8x8 (1 = ทึบ) ---------- */
 var ICONS = {
@@ -1065,34 +1066,121 @@ $('file').addEventListener('change', function(e){
     $('preview').innerHTML =
       '<div class="preview"><img src="'+dataUrl+'" alt="ใบเสร็จ" onclick="openZoom(S.img)">'+
       '<button class="x" onclick="clearImg()">X</button></div>';
-    if (S.boot && S.boot.hasApiKey) analyze();
+    if (S.boot && S.boot.hasApiKey){
+      stashNow();     // อัปรูปขึ้น Drive ไปพร้อมกัน ไม่ต้องรอ AI
+      analyze();
+    }
     else toast('แนบรูปแล้ว — ยังไม่ได้ตั้งค่า API key จึงต้องกรอกเอง');
   });
 });
 
-function clearImg(){ S.img = null; S.tempFileId = ''; S.imageHash = ''; $('preview').innerHTML = ''; reading(false); }
+function clearImg(){
+  S.img = null; S.tempFileId = ''; S.imageHash = ''; S.stashing = null;
+  $('preview').innerHTML = ''; reading(false);
+}
+
+/* อัปรูปขึ้นที่พักบน Drive แยกรอบ ทำคู่ขนานกับตอน AI อ่าน
+   ระหว่างที่เราตรวจตัวเลขในฟอร์ม รูปก็ขึ้นไปเสร็จพอดี ตอนกดบันทึกจึงไม่ต้องรอ */
+function stashNow(){
+  var mine = S.img, t0 = Date.now();
+  S.msStash = 0;
+  S.stashing = { done: false, wait: [] };
+  var st = S.stashing;
+  function finish(){
+    st.done = true;
+    S.msStash = Date.now() - t0;
+    var q = st.wait; st.wait = [];
+    q.forEach(function(f){ f(); });
+  }
+  google.script.run
+    .withSuccessHandler(function(r){
+      if (S.img === mine){
+        if (r && r.tempFileId) S.tempFileId = r.tempFileId;
+        if (r && r.imageHash && !S.imageHash) S.imageHash = r.imageHash;
+      }
+      finish();
+    })
+    .withFailureHandler(function(){ finish(); })   // อัปไม่ขึ้นก็ยังบันทึกได้ เดี๋ยวส่งรูปไปตอนกดบันทึกแทน
+    .api_stashImage({ dataUrl: S.img, mimeType: S.mime });
+}
+
+/* รอให้รูปอัปเสร็จก่อนค่อยบันทึก (ปกติเสร็จไปนานแล้วตั้งแต่ตอนอ่าน) */
+function whenStashed(cb){
+  if (!S.stashing || S.stashing.done){ cb(); return; }
+  S.stashing.wait.push(cb);
+  setTimeout(function(){ if (S.stashing && !S.stashing.done){ S.stashing.done = true; cb(); } }, 20000);
+}
+
+/* ---------- ย่อรูปก่อนส่ง ----------
+   ของเดิมอ่านไฟล์ทั้งก้อนเป็นข้อความ base64 ก่อน รูป 4MB กลายเป็นสตริง 5.4MB
+   แล้วค่อยถอดรหัสกลับ เสียเวลาฟรี ๆ หลายวินาทีบนมือถือ
+   ตอนนี้ให้เบราว์เซอร์อ่านไฟล์ตรง ๆ ผ่าน object URL แล้วค่อยเข้า canvas
+   (ใช้ <img> เพราะมันหมุนรูปตาม EXIF ให้เอง รูปถ่ายแนวตั้งจะได้ไม่ตะแคง) */
+var MAXPX = 1280, JPEGQ = 0.78;
+var _URL = window.URL || window.webkitURL;
+
+function fitSize(w, h){
+  if (w <= MAXPX && h <= MAXPX) return { w: w, h: h };
+  if (w > h) return { w: MAXPX, h: Math.round(h * MAXPX / w) };
+  return { w: Math.round(w * MAXPX / h), h: MAXPX };
+}
+
+/* วาดลง canvas แล้วทำเป็น data URL — ใช้ toBlob ก่อนเพราะไม่บล็อกหน้าจอ */
+function canvasToDataUrl(src, w, h, cb){
+  var c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  var ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(src, 0, 0, w, h);
+  if (!c.toBlob){ cb(c.toDataURL('image/jpeg', JPEGQ)); return; }
+  c.toBlob(function(b){
+    if (!b){ cb(c.toDataURL('image/jpeg', JPEGQ)); return; }
+    var fr = new FileReader();
+    fr.onload = function(ev){ cb(ev.target.result); };
+    fr.onerror = function(){ cb(c.toDataURL('image/jpeg', JPEGQ)); };
+    fr.readAsDataURL(b);
+  }, 'image/jpeg', JPEGQ);
+}
 
 function compress(file, cb){
-  var reader = new FileReader();
-  reader.onload = function(ev){
-    var img = new Image();
-    img.onload = function(){
-      var MAX = 1280, w = img.width, h = img.height;   // ใบเสร็จอ่านออกสบายที่ขนาดนี้ และเล็กลงเกือบครึ่ง
-      if (w > MAX || h > MAX){
-        if (w > h){ h = Math.round(h*MAX/w); w = MAX; }
-        else { w = Math.round(w*MAX/h); h = MAX; }
-      }
-      var c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      var ctx = c.getContext('2d');
-      ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
-      ctx.drawImage(img, 0, 0, w, h);
-      cb(c.toDataURL('image/jpeg', 0.8));
-    };
-    img.onerror = function(){ toast('เปิดไฟล์รูปไม่ได้', true); };
-    img.src = ev.target.result;
+  var t0 = Date.now();
+  var url = null;
+  try { url = _URL && _URL.createObjectURL ? _URL.createObjectURL(file) : null; } catch (e) { url = null; }
+
+  var img = new Image();
+  img.onload = function(){
+    var s = fitSize(img.naturalWidth || img.width, img.naturalHeight || img.height);
+    canvasToDataUrl(img, s.w, s.h, function(d){
+      if (url) { try { _URL.revokeObjectURL(url); } catch (e) {} }
+      S.msShrink = Date.now() - t0;
+      cb(d);
+    });
   };
-  reader.readAsDataURL(file);
+  img.onerror = function(){
+    if (url) { try { _URL.revokeObjectURL(url); } catch (e) {} }
+    toast('เปิดไฟล์รูปไม่ได้', true);
+  };
+
+  if (url) img.src = url;
+  else {
+    var fr = new FileReader();
+    fr.onload = function(ev){ img.src = ev.target.result; };
+    fr.onerror = function(){ toast('เปิดไฟล์รูปไม่ได้', true); };
+    fr.readAsDataURL(file);
+  }
+}
+
+/* ย่อทีละใบ ไม่ยิงพร้อมกัน — รูป 20 ใบพร้อมกันทำมือถือค้างได้ */
+function compressSeries(files, onEach, onDone){
+  var i = 0;
+  (function step(){
+    if (i >= files.length){ onDone(); return; }
+    var idx = i++;
+    compress(files[idx], function(dataUrl){
+      onEach(idx, files[idx], dataUrl);
+      setTimeout(step, 0);
+    });
+  })();
 }
 
 /* จำว่าผู้ใช้แตะช่องไหนไปแล้ว AI จะได้ไม่ทับของที่กรอกเอง */
@@ -1138,8 +1226,8 @@ function analyze(){
       if (r.category && !S.dirty.category) selectByText($('category'), r.category);
       if (r.payment && !S.dirty.payment) selectByText($('payment'), r.payment);
       S.refNo = r.refNo || '';
-      S.tempFileId = r.tempFileId || '';
-      S.imageHash = r.imageHash || '';
+      if (r.tempFileId) S.tempFileId = r.tempFileId;   // ปกติมาจาก stashNow แล้ว
+      if (r.imageHash) S.imageHash = r.imageHash;
       S.forceDup = false;
 
       if (r.duplicate){
@@ -1155,13 +1243,25 @@ function analyze(){
         return;
       }
       var conf = Math.round((r.confidence||0)*100);
-      toast('อ่านได้แล้ว' + (conf ? ' (มั่นใจ '+conf+'%)' : '') + ' — ตรวจยอดก่อนบันทึกนะ');
+      toast('อ่านได้แล้ว' + (conf ? ' (มั่นใจ '+conf+'%)' : '') + timeNote(r) + ' — ตรวจยอดก่อนบันทึกนะ');
     })
     .withFailureHandler(function(e){
       reading(false);
       toast(e.message || 'อ่านรูปไม่สำเร็จ กรอกเองได้เลย', true);
     })
-    .api_analyzeImage({ dataUrl: S.img, mimeType: S.mime, profile: S.profile });
+    .api_analyzeImage({ dataUrl: S.img, mimeType: S.mime, profile: S.profile,
+                        skipStash: !!S.stashing });
+}
+
+/* ถ้ารอบไหนช้าเกิน 6 วินาที บอกให้รู้ว่าเวลาหมดไปกับอะไร จะได้จูนถูกจุด */
+function sec(ms){ return Math.round((ms||0)/100)/10 + 's'; }
+function timeNote(r){
+  var m = r && r.ms;
+  if (!m || !m.total) return '';
+  if ((S.msShrink||0) + m.total < 6000) return '';
+  return ' [ย่อรูป ' + sec(S.msShrink) +
+         ' · อ่าน ' + sec(m.ai) +
+         ' · อัปรูป ' + sec(S.msStash || m.stash) + ' (ทำคู่ขนาน)]';
 }
 
 function selectByText(sel, text){
@@ -1186,18 +1286,15 @@ function startBatch(files){
   pace.gap = 6000;
   $('singleCard').style.display = 'none';
 
-  var pending = files.length;
-  files.forEach(function(f, i){
-    compress(f, function(dataUrl){
-      S.batch[i] = { dataUrl: dataUrl, mime: 'image/jpeg', name: f.name,
-                     profile: S.profile,
-                     status: 'wait', tries: 0, checked: true, data: null, dup: null, err: '' };
-      if (--pending === 0){
-        S.batch = S.batch.filter(Boolean);
-        renderBatch();
-        runQueue();
-      }
-    });
+  compressSeries(files, function(i, f, dataUrl){
+    S.batch[i] = { dataUrl: dataUrl, mime: 'image/jpeg', name: f.name,
+                   profile: S.profile,
+                   status: 'wait', tries: 0, checked: true, data: null, dup: null, err: '' };
+    renderBatch();
+  }, function(){
+    S.batch = S.batch.filter(Boolean);
+    renderBatch();
+    runQueue();
   });
 }
 
@@ -1418,6 +1515,11 @@ function save(){
   var btn = $('saveBtn');
   btn.disabled = true;
   btn.textContent = S.img ? 'กำลังอัปโหลดรูป…' : 'กำลังบันทึก…';
+
+  if (S.img && S.stashing && !S.stashing.done){
+    whenStashed(function(){ btn.disabled = false; save(); });
+    return;
+  }
 
   google.script.run
     .withSuccessHandler(function(r){
